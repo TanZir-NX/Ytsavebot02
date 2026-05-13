@@ -362,7 +362,7 @@ def handle_callback(call):
     
     # ✅ FIXED: Extract URL if present in callback
     url = None
-    if '|' in callback_
+    if '|' in callback_data: 
         parts = callback_data.split('|', 1)
         callback_data = parts[0]
         if len(parts) > 1:
