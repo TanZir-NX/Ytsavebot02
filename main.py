@@ -5,20 +5,20 @@ import time
 import logging
 import shutil
 import threading
+import subprocess
+import sys
 from datetime import datetime
 from flask import Flask, request
 import telebot
 from telebot import types
 import yt_dlp
-# Auto-update yt-dlp to latest version
-import subprocess
-import sys
 
+# Auto-update yt-dlp to latest version
 try:
     subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", "yt-dlp"])
-    logger.info("✅ yt-dlp updated to latest version")
+    logging.info("✅ yt-dlp updated to latest version")
 except Exception as e:
-    logger.warning(f"⚠️ Could not update yt-dlp: {e}")
+    logging.warning(f"⚠️ Could not update yt-dlp: {e}")
 
 # ================= CONFIGURATION =================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -45,17 +45,14 @@ user_downloads = {}
 # ================= HELPER FUNCTIONS =================
 
 def get_user_dir(user_id):
-    """User-specific download folder"""
     user_dir = os.path.join(DOWNLOADS_DIR, str(user_id))
     os.makedirs(user_dir, exist_ok=True)
     return user_dir
 
 def sanitize_filename(filename):
-    """Safe filename for all OS"""
     return re.sub(r'[<>:"/\\|?*]', '_', filename)[:200]
 
 def format_bytes(size):
-    """Human readable file size"""
     for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
         if size < 1024.0:
             return f"{size:.2f} {unit}"
@@ -63,12 +60,9 @@ def format_bytes(size):
     return f"{size:.2f} PB"
 
 def get_video_info(url):
-    """Extract video metadata using yt-dlp"""
     try:
-        # Clean and normalize URL
         url = url.strip()
         
-        # Extract video ID from various YouTube URL formats
         video_id = None
         if 'youtu.be/' in url:
             video_id = url.split('youtu.be/')[-1].split('?')[0].split('&')[0]
@@ -92,7 +86,7 @@ def get_video_info(url):
             'retries': 3,
             'fragment_retries': 3,
             'extractor_retries': 3,
-            'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
             'referer': 'https://www.youtube.com/',
         }
         
@@ -121,11 +115,9 @@ def get_video_info(url):
         return None
     except Exception as e:
         logger.error(f"❌ Video info fetch error: {type(e).__name__} - {str(e)}")
-        import traceback
-        logger.error(traceback.format_exc())
         return None
+
 def download_video(url, user_id, quality='720'):
-    """Download video with specified quality"""
     user_dir = get_user_dir(user_id)
     filename_template = os.path.join(user_dir, '%(title)s.%(ext)s')
     
@@ -150,7 +142,6 @@ def download_video(url, user_id, quality='720'):
         return {'success': False, 'error': str(e)}
 
 def download_progress_hook(d, user_id):
-    """Handle download progress updates"""
     if d['status'] == 'downloading':
         percent = d.get('_percent_str', '0%').strip()
         speed = d.get('_speed_str', 'N/A').strip()
@@ -159,7 +150,6 @@ def download_progress_hook(d, user_id):
         user_states[user_id] = {'status': 'completed', 'progress': '100%'}
 
 def save_download_history(user_id, video_info, filepath):
-    """Save to user's download history"""
     history_file = os.path.join(get_user_dir(user_id), 'history.json')
     history = []
     if os.path.exists(history_file):
@@ -281,7 +271,7 @@ def send_welcome(message):
 3. Select your preferred quality
 4. Enjoy your download! 🎉
 
-️ <b>Powered by:</b> yt-dlp + pyTelegramBotAPI
+<b>Powered by:</b> yt-dlp + pyTelegramBotAPI
     """
     
     bot.send_message(
@@ -362,18 +352,18 @@ def handle_youtube_url(message):
     video_info = get_video_info(url)
     
     if not video_info:
-    bot.send_message(
-        message.chat.id, 
-        "❌ <b>Could not fetch video info</b>\n\n"
-        "Possible reasons:\n"
-        "• Video is private or deleted\n"
-        "• Video is age-restricted\n"
-        "• Network issue - try again later\n"
-        "• Invalid YouTube URL\n\n"
-        "Please check the URL and try again.",
-        parse_mode="HTML"
-    )
-    return
+        bot.send_message(
+            message.chat.id, 
+            "❌ <b>Could not fetch video info</b>\n\n"
+            "Possible reasons:\n"
+            "• Video is private or deleted\n"
+            "• Video is age-restricted\n"
+            "• Network issue - try again later\n"
+            "• Invalid YouTube URL\n\n"
+            "Please check the URL and try again.",
+            parse_mode="HTML"
+        )
+        return
     
     user_states[user_id].update({
         'state': 'video_selected',
@@ -416,15 +406,15 @@ def handle_callback(call):
     callback_data = call.data
     logger.info(f"Callback: {callback_data} from user {user_id}")
     
-    # ✅ FIXED: Extract URL if present in callback
+    # Extract URL if present in callback
     url = None
-    if '|' in callback_data: 
+    if '|' in callback_data:
         parts = callback_data.split('|', 1)
         callback_data = parts[0]
         if len(parts) > 1:
             url = parts[1]
     
-    # ========= MAIN MENU NAVIGATION =========
+    # MAIN MENU NAVIGATION
     if callback_data == 'back_to_main':
         user_states[user_id] = {'state': 'main_menu'}
         bot.edit_message_text(
@@ -445,7 +435,7 @@ def handle_callback(call):
                 reply_markup=video_download_menu_keyboard()
             )
     
-    # ========= VIDEO INFO OPTIONS =========
+    # VIDEO INFO OPTIONS
     elif callback_data == 'preview_thumb' and user_states.get(user_id, {}).get('video_info'):
         info = user_states[user_id]['video_info']
         if info.get('thumbnail'):
@@ -488,7 +478,7 @@ def handle_callback(call):
         share_text = f"🎬 Check out this video:\n{info['title']}\n\n📺 {info['channel']}\n🔗 {user_states[user_id]['video_url']}"
         bot.send_message(call.message.chat.id, share_text, disable_web_page_preview=True)
     
-    # ========= DOWNLOAD FLOW =========
+    # DOWNLOAD FLOW
     elif callback_data == 'download_now':
         video_url = url or user_states.get(user_id, {}).get('video_url')
         if video_url:
@@ -501,7 +491,7 @@ def handle_callback(call):
                 reply_markup=quality_menu_keyboard(video_url)
             )
     
-    elif callback_data.startswith('q'):  # Quality selection
+    elif callback_data.startswith('q'):
         quality = callback_data[1:]
         if quality in ['144','240','360','480','720','1080','1440','2160','mobile']:
             video_url = url or user_states.get(user_id, {}).get('video_url')
@@ -528,7 +518,7 @@ def handle_callback(call):
             )
             thread.start()
     
-    # ========= MY DOWNLOADS OPTIONS =========
+    # MY DOWNLOADS OPTIONS
     elif callback_data == 'show_history':
         history_file = os.path.join(get_user_dir(user_id), 'history.json')
         if os.path.exists(history_file):
@@ -587,7 +577,7 @@ def handle_callback(call):
             reply_markup=my_downloads_menu_keyboard()
         )
     
-    # ========= DOWNLOAD PROCESS CONTROLS =========
+    # DOWNLOAD PROCESS CONTROLS
     elif callback_data in ['pause_dl', 'resume_dl', 'cancel_dl', 'retry_dl', 'show_progress', 'speed_info']:
         status = user_states.get(user_id, {})
         if status.get('state') == 'downloading':
@@ -603,7 +593,7 @@ def handle_callback(call):
         else:
             bot.answer_callback_query(call.id, "⚠️ No active download", show_alert=True)
     
-    # ========= NEW SESSION =========
+    # NEW SESSION
     elif callback_data == 'new_session':
         user_states[user_id] = {'state': 'main_menu'}
         bot.send_message(
@@ -613,14 +603,13 @@ def handle_callback(call):
             reply_markup=main_menu_keyboard()
         )
     
-    # ========= FALLBACK =========
+    # FALLBACK
     else:
         bot.answer_callback_query(call.id, "⚙️ Feature coming soon!", show_alert=True)
 
 # ================= BACKGROUND DOWNLOAD PROCESS =================
 
 def process_download(video_url, user_id, quality, chat_id, msg_id):
-    """Background task to handle download"""
     try:
         result = download_video(video_url, user_id, quality)
         
@@ -663,23 +652,19 @@ def home():
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    """Optional webhook endpoint"""
     return '', 200
 
 @app.route('/health')
 def health():
-    """Health check for Render.com"""
     return {'status': 'healthy', 'bot': 'YTSAVEBOT'}, 200
 
 @app.route('/keepalive')
 def keepalive():
-    """Keep bot alive on free tier"""
     return '🟢 Bot is alive!', 200
 
 # ================= AUTO-CLEANUP TASK =================
 
 def cleanup_old_files():
-    """Delete files older than 24 hours"""
     now = time.time()
     for user_folder in os.listdir(DOWNLOADS_DIR):
         user_path = os.path.join(DOWNLOADS_DIR, user_folder)
@@ -698,7 +683,6 @@ def cleanup_old_files():
 # ================= BOT STARTUP =================
 
 def start_bot():
-    """Start bot with polling"""
     logger.info("🚀 YTSAVEBOT starting...")
     
     bot.set_my_commands([
@@ -718,8 +702,6 @@ def start_bot():
     bot.infinity_polling(timeout=30, long_polling_timeout=30)
 
 if __name__ == "__main__":
-    import threading
-    
     flask_thread = threading.Thread(
         target=lambda: app.run(host="0.0.0.0", port=int(os.getenv("PORT", 8080))),
         daemon=True
