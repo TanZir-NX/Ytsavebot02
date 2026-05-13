@@ -4,6 +4,7 @@ import json
 import time
 import logging
 import shutil
+import threading
 from datetime import datetime
 from flask import Flask, request
 import telebot
@@ -11,11 +12,9 @@ from telebot import types
 import yt_dlp
 
 # ================= CONFIGURATION =================
-BOT_TOKEN = os.getenv("BOT_TOKEN")  # 🔐 Environment variable থেকে Token
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
     raise ValueError("⚠️ BOT_TOKEN environment variable set করুন Render.com-এ!")
-
-API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
 # Storage settings
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -30,9 +29,9 @@ app = Flask(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
-# User state management (in-memory for simplicity)
+# User state management
 user_states = {}
-user_downloads = {}  # {user_id: [download_info]}
+user_downloads = {}
 
 # ================= HELPER FUNCTIONS =================
 
@@ -84,14 +83,8 @@ def download_video(url, user_id, quality='720'):
     user_dir = get_user_dir(user_id)
     filename_template = os.path.join(user_dir, '%(title)s.%(ext)s')
     
-    # Quality mapping for yt-dlp
-    quality_map = {
-        '144': '144p', '240': '240p', '360': '360p', '480': '480p',
-        '720': '720p', '1080': '1080p', '1440': '2K', '2160': '4K'
-    }
-    
     ydl_opts = {
-        'format': f'bestvideo[height<={quality}]+bestaudio/best[height<={quality}]' if quality != 'mobile' else 'best[height<=480]/best',
+        'format': f'bestvideo[height<={quality}]+bestaudio/best[height<={quality}]' if quality not in ['mobile', '720'] else 'best[height<=480]/best',
         'outtmpl': filename_template,
         'quiet': True,
         'no_warnings': True,
@@ -102,7 +95,6 @@ def download_video(url, user_id, quality='720'):
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
             filepath = ydl.prepare_filename(info)
-            # Rename to safe filename
             final_path = os.path.join(user_dir, sanitize_filename(info['title']) + '.mp4')
             if os.path.exists(filepath) and filepath != final_path:
                 shutil.move(filepath, final_path)
@@ -125,8 +117,11 @@ def save_download_history(user_id, video_info, filepath):
     history_file = os.path.join(get_user_dir(user_id), 'history.json')
     history = []
     if os.path.exists(history_file):
-        with open(history_file, 'r', encoding='utf-8') as f:
-            history = json.load(f)
+        try:
+            with open(history_file, 'r', encoding='utf-8') as f:
+                history = json.load(f)
+        except:
+            history = []
     
     history.append({
         'title': video_info.get('title'),
@@ -136,7 +131,6 @@ def save_download_history(user_id, video_info, filepath):
         'thumbnail': video_info.get('thumbnail', '')
     })
     
-    # Keep only last 50 downloads
     if len(history) > 50:
         history = history[-50:]
     
@@ -241,7 +235,7 @@ def send_welcome(message):
 3. Select your preferred quality
 4. Enjoy your download! 🎉
 
-🛠️ <b>Powered by:</b> yt-dlp + pyTelegramBotAPI
+️ <b>Powered by:</b> yt-dlp + pyTelegramBotAPI
     """
     
     bot.send_message(
@@ -314,12 +308,10 @@ def handle_youtube_url(message):
     user_id = message.from_user.id
     url = message.text.strip()
     
-    # Basic URL validation
     if not re.match(r'(https?://)?(www\.)?(youtube\.com|youtu\.be)/.+', url):
         bot.send_message(message.chat.id, "❌ Invalid YouTube URL. Please try again.")
         return
     
-    # Fetch video info
     bot.send_chat_action(message.chat.id, 'typing')
     video_info = get_video_info(url)
     
@@ -327,14 +319,12 @@ def handle_youtube_url(message):
         bot.send_message(message.chat.id, "❌ Could not fetch video info. Check the URL and try again.")
         return
     
-    # Store URL in state
     user_states[user_id].update({
         'state': 'video_selected',
         'video_url': url,
         'video_info': video_info
     })
     
-    # Show preview with options
     caption = f"""
 🎬 <b>{video_info['title']}</b>
 
@@ -370,10 +360,13 @@ def handle_callback(call):
     callback_data = call.data
     logger.info(f"Callback: {callback_data} from user {user_id}")
     
-    # Extract URL if present in callback
+    # ✅ FIXED: Extract URL if present in callback
     url = None
     if '|' in callback_
-        callback_data, url = callback_data.split('|', 1)
+        parts = callback_data.split('|', 1)
+        callback_data = parts[0]
+        if len(parts) > 1:
+            url = parts[1]
     
     # ========= MAIN MENU NAVIGATION =========
     if callback_data == 'back_to_main':
@@ -432,7 +425,6 @@ def handle_callback(call):
         bot.answer_callback_query(call.id, f"📺 Channel: {channel}", show_alert=True)
     
     elif callback_data == 'copy_link' and user_states.get(user_id, {}).get('video_url'):
-        url = user_states[user_id]['video_url']
         bot.answer_callback_query(call.id, "🔗 Link copied to clipboard!", show_alert=True)
     
     elif callback_data == 'share_video' and user_states.get(user_id, {}).get('video_info'):
@@ -442,8 +434,8 @@ def handle_callback(call):
     
     # ========= DOWNLOAD FLOW =========
     elif callback_data == 'download_now':
-        if url or user_states.get(user_id, {}).get('video_url'):
-            video_url = url or user_states[user_id]['video_url']
+        video_url = url or user_states.get(user_id, {}).get('video_url')
+        if video_url:
             user_states[user_id].update({'state': 'selecting_quality', 'video_url': video_url})
             bot.edit_message_text(
                 "🎥 <b>Select Video Quality:</b>",
@@ -461,7 +453,6 @@ def handle_callback(call):
                 bot.answer_callback_query(call.id, "❌ Session expired. Please start over.", show_alert=True)
                 return
             
-            # Send processing message
             msg = bot.send_message(
                 call.message.chat.id,
                 f"⬇️ <b>Starting download</b> ({quality}p)...\n\n<i>This may take a while for large videos.</i>",
@@ -475,8 +466,6 @@ def handle_callback(call):
                 'quality': quality
             })
             
-            # Start download in background
-            import threading
             thread = threading.Thread(
                 target=process_download,
                 args=(video_url, user_id, quality, call.message.chat.id, msg.message_id)
@@ -487,14 +476,17 @@ def handle_callback(call):
     elif callback_data == 'show_history':
         history_file = os.path.join(get_user_dir(user_id), 'history.json')
         if os.path.exists(history_file):
-            with open(history_file, 'r', encoding='utf-8') as f:
-                history = json.load(f)
-            if history:
-                text = "📜 <b>Download History</b> (Last 5):\n\n"
-                for item in history[-5:][::-1]:
-                    text += f"• {item['title']}\n  📦 {format_bytes(item['size'])}\n  ⏰ {item['timestamp'][:16]}\n\n"
-                bot.send_message(call.message.chat.id, text, parse_mode="HTML", reply_markup=new_session_keyboard())
-            else:
+            try:
+                with open(history_file, 'r', encoding='utf-8') as f:
+                    history = json.load(f)
+                if history:
+                    text = "📜 <b>Download History</b> (Last 5):\n\n"
+                    for item in history[-5:][::-1]:
+                        text += f"• {item['title']}\n  📦 {format_bytes(item['size'])}\n  ⏰ {item['timestamp'][:16]}\n\n"
+                    bot.send_message(call.message.chat.id, text, parse_mode="HTML", reply_markup=new_session_keyboard())
+                else:
+                    bot.answer_callback_query(call.id, "📭 No download history yet!", show_alert=True)
+            except:
                 bot.answer_callback_query(call.id, "📭 No download history yet!", show_alert=True)
         else:
             bot.answer_callback_query(call.id, "📭 No download history yet!", show_alert=True)
@@ -524,7 +516,6 @@ def handle_callback(call):
             fpath = os.path.join(user_dir, f)
             if os.path.isfile(fpath) and f != 'history.json':
                 os.remove(fpath)
-        # Clear history too
         history_file = os.path.join(user_dir, 'history.json')
         if os.path.exists(history_file):
             os.remove(history_file)
@@ -578,28 +569,27 @@ def process_download(video_url, user_id, quality, chat_id, msg_id):
         result = download_video(video_url, user_id, quality)
         
         if result['success']:
-            # Save to history
             video_info = get_video_info(video_url) or {'title': result['title'], 'thumbnail': ''}
             save_download_history(user_id, video_info, result['path'])
             
-            # Send file to user
             if os.path.exists(result['path']):
-                with open(result['path'], 'rb') as video:
-                    bot.send_video(
-                        chat_id,
-                        video,
-                        caption=f"✅ <b>Download Complete!</b>\n\n🎬 {result['title']}\n📦 {format_bytes(result['size'])}",
-                        parse_mode="HTML",
-                        reply_markup=new_session_keyboard()
-                    )
-                # Optional: Delete file after sending to save space (comment out if you want to keep)
-                # os.remove(result['path'])
+                try:
+                    with open(result['path'], 'rb') as video:
+                        bot.send_video(
+                            chat_id,
+                            video,
+                            caption=f"✅ <b>Download Complete!</b>\n\n🎬 {result['title']}\n📦 {format_bytes(result['size'])}",
+                            parse_mode="HTML",
+                            reply_markup=new_session_keyboard()
+                        )
+                except Exception as e:
+                    logger.error(f"Error sending video: {e}")
+                    bot.send_message(chat_id, f"❌ Error sending video: {str(e)}")
             else:
                 bot.send_message(chat_id, "❌ File not found after download.")
         else:
             bot.send_message(chat_id, f"❌ Download failed: {result.get('error', 'Unknown error')}")
         
-        # Reset state
         if user_id in user_states:
             user_states[user_id]['state'] = 'main_menu'
             
@@ -617,22 +607,23 @@ def home():
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    """Optional webhook endpoint if you switch from polling"""
-    if request.headers.get('X-Telegram-Bot-Api-Secret-Token') == os.getenv('WEBHOOK_SECRET'):
-        update = types.Update.de_json(request.stream.read().decode())
-        bot.process_new_updates([update])
-        return '', 200
-    return 'Unauthorized', 401
+    """Optional webhook endpoint"""
+    return '', 200
 
 @app.route('/health')
 def health():
     """Health check for Render.com"""
     return {'status': 'healthy', 'bot': 'YTSAVEBOT'}, 200
 
+@app.route('/keepalive')
+def keepalive():
+    """Keep bot alive on free tier"""
+    return '🟢 Bot is alive!', 200
+
 # ================= AUTO-CLEANUP TASK =================
 
 def cleanup_old_files():
-    """Delete files older than 24 hours to manage storage"""
+    """Delete files older than 24 hours"""
     now = time.time()
     for user_folder in os.listdir(DOWNLOADS_DIR):
         user_path = os.path.join(DOWNLOADS_DIR, user_folder)
@@ -651,40 +642,32 @@ def cleanup_old_files():
 # ================= BOT STARTUP =================
 
 def start_bot():
-    """Start bot with polling + background cleanup"""
+    """Start bot with polling"""
     logger.info("🚀 YTSAVEBOT starting...")
     
-    # Set bot commands
     bot.set_my_commands([
         types.BotCommand('start', '🏠 Start the bot'),
         types.BotCommand('help', '📚 Help & guide'),
         types.BotCommand('cancel', '❌ Cancel operation')
     ])
     
-    # Start cleanup thread
-    import threading
     def cleanup_loop():
         while True:
-            time.sleep(3600)  # Every hour
+            time.sleep(3600)
             cleanup_old_files()
     
     threading.Thread(target=cleanup_loop, daemon=True).start()
     
-    # Start polling (Render.com compatible with long-polling)
     logger.info("✅ Bot polling started...")
     bot.infinity_polling(timeout=30, long_polling_timeout=30)
 
 if __name__ == "__main__":
-    # For Render.com: Flask handles web, but we need polling too
-    # Option 1: Use threading to run both
     import threading
     
-    # Start Flask in background
     flask_thread = threading.Thread(
         target=lambda: app.run(host="0.0.0.0", port=int(os.getenv("PORT", 8080))),
         daemon=True
     )
     flask_thread.start()
     
-    # Start bot polling in main thread
     start_bot()
