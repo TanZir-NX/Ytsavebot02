@@ -362,8 +362,18 @@ def handle_youtube_url(message):
     video_info = get_video_info(url)
     
     if not video_info:
-        bot.send_message(message.chat.id, "❌ Could not fetch video info. Check the URL and try again.")
-        return
+    bot.send_message(
+        message.chat.id, 
+        "❌ <b>Could not fetch video info</b>\n\n"
+        "Possible reasons:\n"
+        "• Video is private or deleted\n"
+        "• Video is age-restricted\n"
+        "• Network issue - try again later\n"
+        "• Invalid YouTube URL\n\n"
+        "Please check the URL and try again.",
+        parse_mode="HTML"
+    )
+    return
     
     user_states[user_id].update({
         'state': 'video_selected',
