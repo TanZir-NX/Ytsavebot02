@@ -10,6 +10,15 @@ from flask import Flask, request
 import telebot
 from telebot import types
 import yt_dlp
+# Auto-update yt-dlp to latest version
+import subprocess
+import sys
+
+try:
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", "yt-dlp"])
+    logger.info("✅ yt-dlp updated to latest version")
+except Exception as e:
+    logger.warning(f"⚠️ Could not update yt-dlp: {e}")
 
 # ================= CONFIGURATION =================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -55,29 +64,66 @@ def format_bytes(size):
 
 def get_video_info(url):
     """Extract video metadata using yt-dlp"""
-    ydl_opts = {
-        'quiet': True,
-        'no_warnings': True,
-        'extract_flat': False,
-        'skip_download': True,
-    }
     try:
+        # Clean and normalize URL
+        url = url.strip()
+        
+        # Extract video ID from various YouTube URL formats
+        video_id = None
+        if 'youtu.be/' in url:
+            video_id = url.split('youtu.be/')[-1].split('?')[0].split('&')[0]
+        elif 'youtube.com/watch?v=' in url:
+            video_id = url.split('v=')[-1].split('&')[0].split('#')[0]
+        elif 'youtube.com/short/' in url:
+            video_id = url.split('/short/')[-1].split('?')[0]
+        
+        if video_id:
+            url = f"https://www.youtube.com/watch?v={video_id}"
+        
+        logger.info(f"🔍 Fetching info for: {url}")
+        
+        ydl_opts = {
+            'quiet': True,
+            'no_warnings': True,
+            'no_color': True,
+            'extract_flat': False,
+            'skip_download': True,
+            'ignoreerrors': False,
+            'retries': 3,
+            'fragment_retries': 3,
+            'extractor_retries': 3,
+            'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'referer': 'https://www.youtube.com/',
+        }
+        
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
-            return {
-                'title': info.get('title', 'Unknown'),
-                'duration': info.get('duration', 0),
-                'view_count': info.get('view_count', 0),
-                'like_count': info.get('like_count', 0),
-                'channel': info.get('channel', 'Unknown'),
-                'thumbnail': info.get('thumbnail', ''),
-                'description': info.get('description', '')[:500] + '...' if info.get('description') else 'N/A',
-                'formats': info.get('formats', [])
-            }
-    except Exception as e:
-        logger.error(f"❌ Video info fetch error: {e}")
+            
+            if info:
+                video_data = {
+                    'title': info.get('title', 'Unknown'),
+                    'duration': info.get('duration', 0),
+                    'view_count': info.get('view_count', 0),
+                    'like_count': info.get('like_count', 0),
+                    'channel': info.get('channel', info.get('uploader', 'Unknown')),
+                    'thumbnail': info.get('thumbnail', ''),
+                    'description': (info.get('description', '') or '')[:500] + '...' if info.get('description') else 'N/A',
+                    'formats': info.get('formats', [])
+                }
+                logger.info(f"✅ Video info fetched: {video_data['title']}")
+                return video_data
+            else:
+                logger.error("❌ No info returned from yt-dlp")
+                return None
+                
+    except yt_dlp.utils.DownloadError as e:
+        logger.error(f"❌ Download error: {str(e)}")
         return None
-
+    except Exception as e:
+        logger.error(f"❌ Video info fetch error: {type(e).__name__} - {str(e)}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return None
 def download_video(url, user_id, quality='720'):
     """Download video with specified quality"""
     user_dir = get_user_dir(user_id)
